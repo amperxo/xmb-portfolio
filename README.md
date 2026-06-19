@@ -1,4 +1,4 @@
-1# XMB Portfolio
+# XMB Portfolio
 
 A personal portfolio styled after the PlayStation 3 **XrossMediaBar (XMB)** — a
 generative wave background on `<canvas>`, a cold-boot intro, and arrow-key
