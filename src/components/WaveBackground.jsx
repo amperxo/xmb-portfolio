@@ -13,7 +13,8 @@ import { useEffect, useRef } from 'react'
 //                         whose control points morph with layered noise.
 //   2. Background      — vertical gradient tinted by month AND local time of
 //                         day (dawn / day / dusk / night).
-//   3. Particles       — ambient rising motes emitted continuously.
+//   3. Sparkles        — ambient motes that cling to the ribbon and twinkle
+//                         in place (no drift), like light catching the wave.
 //
 // Fully self-running: no pointer / device input — it just plays.
 // ---------------------------------------------------------------------------
@@ -21,19 +22,28 @@ import { useEffect, useRef } from 'react'
 // A 12-stop palette (originally the PS3 XMB's per-month tints). The background
 // now drifts continuously through these rather than picking one by the month.
 // [topColor, bottomColor] as [h, s, l].
-const PALETTE = [
-  [[210, 70, 18], [225, 80, 6]], // Jan — deep winter blue
-  [[330, 55, 18], [300, 60, 6]], // Feb — rose / purple
-  [[150, 50, 16], [170, 60, 6]], // Mar — spring green
-  [[120, 45, 16], [140, 55, 6]], // Apr — fresh green
-  [[90, 45, 16], [110, 55, 6]],  // May — lime
-  [[160, 55, 16], [185, 65, 6]], // Jun — teal / sea green
-  [[195, 65, 16], [210, 75, 6]], // Jul — sky
-  [[35, 60, 18], [20, 65, 6]],   // Aug — warm amber
-  [[25, 55, 18], [10, 60, 6]],   // Sep — autumn orange
-  [[20, 50, 16], [350, 55, 6]],  // Oct — rust
-  [[260, 45, 16], [240, 55, 6]], // Nov — violet dusk
-  [[205, 60, 18], [220, 75, 6]], // Dec — icy blue
+// Brighter, more saturated take on the XMB monthly tints (these are tuned by
+// eye, not extracted official values). Top stop is vivid; bottom stays deep so
+// the gradient keeps the XMB sense of depth instead of going flat.
+export const PALETTE = [
+  [[210, 85, 32], [225, 90, 12]], // Jan — winter blue
+  [[330, 78, 34], [300, 78, 12]], // Feb — rose / purple
+  [[150, 72, 32], [170, 78, 12]], // Mar — spring green
+  [[120, 68, 32], [140, 72, 12]], // Apr — fresh green
+  [[85, 72, 34], [105, 72, 12]],  // May — lime
+  [[175, 78, 32], [190, 82, 12]], // Jun — teal / sea green
+  [[200, 88, 34], [212, 90, 13]], // Jul — sky
+  [[40, 92, 36], [22, 92, 13]],   // Aug — warm amber
+  [[26, 88, 34], [8, 86, 12]],    // Sep — autumn orange
+  [[14, 82, 32], [350, 74, 12]],  // Oct — rust
+  [[272, 70, 34], [245, 74, 12]], // Nov — violet dusk
+  [[195, 84, 36], [215, 88, 14]], // Dec — icy blue
+]
+
+// Friendly names for each palette stop, used by the color switcher UI.
+export const THEME_NAMES = [
+  'Winter Blue', 'Rose', 'Spring Green', 'Fresh Green', 'Lime', 'Sea Green',
+  'Sky', 'Amber', 'Orange', 'Rust', 'Violet', 'Icy Blue',
 ]
 
 const TAU = Math.PI * 2
@@ -83,8 +93,14 @@ function timeOfDay(dayFrac) {
   }
 }
 
-export default function WaveBackground() {
+export default function WaveBackground({ colorIndex = null }) {
   const canvasRef = useRef(null)
+  // Read inside the rAF loop without restarting it. null = auto-cycle through
+  // the palette; a number locks the wave to that single stop (cross-faded).
+  const colorIndexRef = useRef(colorIndex)
+  useEffect(() => {
+    colorIndexRef.current = colorIndex
+  }, [colorIndex])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -100,31 +116,52 @@ export default function WaveBackground() {
     let last = performance.now()
     const mountedAt = last // intro timeline starts the moment we mount
 
+    // Smoothed current top/bottom colors so switching themes cross-fades
+    // instead of snapping. Seeded lazily on the first frame.
+    let curTop = null
+    let curBottom = null
+
+    // Time-of-day only shifts perceptibly over minutes, so there's no point
+    // allocating a Date and recomputing the sun curve 60x/sec. Recompute at
+    // most ~1x/sec and cache the result for the frames in between.
+    let todCacheAt = -Infinity
+    let dayFrac = 0
+    let tod = timeOfDay(0)
+
     // Eased ramp from 0→1 as x crosses [a,b]; used to stage the intro reveal.
     const ramp = (x, a, b) => smoothstep(clamp((x - a) / (b - a), 0, 1))
 
     // ---- the central ribbon --------------------------------------------
-    // Each strand is a horizontal cubic-bezier path; stacking + projection
-    // gives the ribbon volume. Control-point heights morph every frame.
+    // The wave is a band of thin parallel filaments of light (XMB-style): each
+    // is a horizontal cubic-bezier stroke; stacked with offset phases and drawn
+    // additively they weave into a glowing ribbon. Heights morph every frame.
     const COLS = 14            // control points across the width
-    const STRANDS = 9          // stacked strands forming ribbon thickness
+    const FILAMENTS = 150      // thin light strands forming the band (dense
+                               // enough that stretched regions don't show gaps)
+    const BAND_H = 104         // vertical thickness the filaments spread across
     const pts = new Float32Array(COLS) // reused scratch buffer per strand
 
     // Generative wave: superposed sines with slowly drifting parameters so the
     // shape never exactly repeats. Returns vertical offset for a given u in
     // [0,1] across the screen, at time t (seconds) and strand depth d.
+    //
+    // The dominant term is a STANDING swell: sin(k·u) sets the crest/trough
+    // shape across the screen, and cos(ω·t) makes those crests heave up and
+    // down *in place* — so the ribbon undulates like water rather than sliding
+    // sideways. A small traveling term rolls through underneath for life and
+    // to break the perfect symmetry; fine chop rides on top.
     const wave = (u, t, d) => {
-      const a = Math.sin(u * 6.0 + t * 0.6 + d * 0.4) * 34
-      const b = Math.sin(u * 2.3 - t * 0.35 + d * 0.9) * 22
-      const c = Math.sin(u * 11.0 + t * 1.1) * 9
+      const a = Math.sin(u * 5.0 + d * 0.4) * Math.cos(t * 0.9 + d * 0.5) * 42
+      const b = Math.sin(u * 3.0 - t * 0.6 + d * 0.9) * 18
+      const c = Math.sin(u * 11.0 + t * 1.1 + d * 0.3) * 10
       return a + b + c
     }
 
     // Catmull-Rom -> cubic bezier so control points morph as smooth bezier
     // curves (the requirement) instead of polylines.
-    const strokeRibbonStrand = (yArr, baseX, stepX, fill) => {
-      ctx.beginPath()
-      ctx.moveTo(baseX, yArr[0])
+    const strokeRibbonStrand = (yArr, baseX, stepX, fill, c = ctx) => {
+      c.beginPath()
+      c.moveTo(baseX, yArr[0])
       for (let i = 0; i < COLS - 1; i++) {
         const x0 = baseX + i * stepX
         const x1 = baseX + (i + 1) * stepX
@@ -136,38 +173,94 @@ export default function WaveBackground() {
         const c1y = y0 + (y1 - yPrev) / 6
         const c2x = x1 - stepX / 3
         const c2y = y1 - (yNext - y0) / 6
-        ctx.bezierCurveTo(c1x, c1y, c2x, c2y, x1, y1)
+        c.bezierCurveTo(c1x, c1y, c2x, c2y, x1, y1)
       }
       if (fill) {
-        ctx.lineTo(baseX + (COLS - 1) * stepX, h)
-        ctx.lineTo(baseX, h)
-        ctx.closePath()
+        c.lineTo(baseX + (COLS - 1) * stepX, h)
+        c.lineTo(baseX, h)
+        c.closePath()
       }
     }
 
-    // ---- ambient particle emitter --------------------------------------
+    // ---- ambient sparkles ----------------------------------------------
+    // The XMB motes don't stream across the screen — they cling to the wave
+    // and twinkle in place, like flecks of light catching the ribbon. Each
+    // sparkle has a fixed home along the ribbon (u across, band into its
+    // thickness) and pulses its brightness on its own little clock.
     let motes = []
     const seedMotes = () => {
-      const count = Math.round(clamp(w / 28, 18, 46))
-      motes = Array.from({ length: count }, () => spawnMote(true))
+      const count = Math.round(clamp(w / 2.2, 300, 700))
+      motes = Array.from({ length: count }, () => spawnMote())
     }
-    const spawnMote = (anywhere) => ({
-      x: Math.random(),
-      y: anywhere ? Math.random() : 1.04,
-      r: Math.random() * 1.8 + 0.4,
-      spd: Math.random() * 0.05 + 0.02, // screen-heights per second
-      drift: (Math.random() - 0.5) * 0.6,
-      a: Math.random() * 0.4 + 0.12,
-      tw: Math.random() * TAU, // twinkle phase
+    const spawnMote = () => ({
+      u: Math.random(),                       // position along the ribbon
+      // Gaussian-ish: dense on the ribbon, thinning into a halo around it.
+      // Tighter spread -> the bulk clusters right on the ribbon.
+      band: (Math.random() + Math.random() + Math.random() - 1.5) * 1.1,
+      r: Math.random() * 1.5 + 0.5,
+      drift: (Math.random() - 0.5) * 0.015,   // gentle horizontal shimmer speed
+      tw: Math.random() * TAU,                // twinkle phase
+      twSpd: Math.random() * 1.8 + 0.9,       // how fast it sparkles
+      a: Math.random() * 0.5 + 0.3,           // peak brightness
     })
 
+    // Pre-rendered sparkle sprite. Baking one soft glowing dot to an offscreen
+    // canvas lets us stamp every sparkle with a cheap drawImage instead of an
+    // arc + per-sparkle shadowBlur (which re-runs a blur convolution hundreds
+    // of times per frame — the main source of lag). White core so it tints
+    // correctly under the additive 'lighter' blend.
+    const SPRITE = 64 // px; higher res keeps the hard core crisp when scaled
+    const spriteCanvas = document.createElement('canvas')
+    spriteCanvas.width = SPRITE
+    spriteCanvas.height = SPRITE
+    {
+      const sc = spriteCanvas.getContext('2d')
+      const c = SPRITE / 2
+      // Soft outer halo first...
+      const grd = sc.createRadialGradient(c, c, 0, c, c, c)
+      grd.addColorStop(0, 'rgba(255,255,255,0.9)')
+      grd.addColorStop(0.12, 'rgba(255,255,255,0.45)')
+      grd.addColorStop(0.4, 'rgba(255,255,255,0.12)')
+      grd.addColorStop(1, 'rgba(255,255,255,0)')
+      sc.fillStyle = grd
+      sc.fillRect(0, 0, SPRITE, SPRITE)
+      // ...then a small, hard, blown-out core stamped on top. This bright
+      // point next to the soft halo is what reads as a sharp sparkle.
+      const core = sc.createRadialGradient(c, c, 0, c, c, SPRITE * 0.09)
+      core.addColorStop(0, 'rgba(255,255,255,1)')
+      core.addColorStop(0.7, 'rgba(255,255,255,1)')
+      core.addColorStop(1, 'rgba(255,255,255,0)')
+      sc.fillStyle = core
+      sc.fillRect(0, 0, SPRITE, SPRITE)
+    }
+
+    // Offscreen buffer for the filament band. The filaments are drawn here
+    // sharp (no per-stroke filter), then blitted to the screen with a single
+    // blur pass — one blur convolution per frame instead of one per strand.
+    const ribbonCanvas = document.createElement('canvas')
+    const rctx = ribbonCanvas.getContext('2d')
+
+    // The bottom-left vignette never changes shape, so build it once per resize
+    // instead of reallocating a gradient (and the garbage it makes) every frame.
+    let vignette = null
+
     const resize = () => {
-      dpr = Math.min(window.devicePixelRatio || 1, 2)
+      // Cap DPR at 1.5: every full-screen blur/gradient cost scales with pixel
+      // count, and the wave is blurred + the bg is smooth, so 1.5 vs 2 is
+      // visually nil but ~44% cheaper to render.
+      dpr = Math.min(window.devicePixelRatio || 1, 1.5)
       w = canvas.clientWidth
       h = canvas.clientHeight
       canvas.width = Math.round(w * dpr)
       canvas.height = Math.round(h * dpr)
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ribbonCanvas.width = canvas.width
+      ribbonCanvas.height = canvas.height
+      rctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      vignette = ctx.createRadialGradient(0, h, 0, 0, h, Math.max(w, h) * 0.85)
+      vignette.addColorStop(0, 'rgba(0, 0, 0, 0.6)')
+      vignette.addColorStop(0.6, 'rgba(0, 0, 0, 0.28)')
+      vignette.addColorStop(1, 'rgba(0, 0, 0, 0)')
       seedMotes()
     }
 
@@ -182,10 +275,27 @@ export default function WaveBackground() {
       const t = reduceMotion ? 0 : now / 1000
 
       // ---- slowly cycling, time-of-day tinted gradient ----
-      const [topBase, bottomBase] = paletteAt(t)
-      const d = new Date()
-      const dayFrac = (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400
-      const tod = timeOfDay(dayFrac)
+      // Target colors: auto-cycle through the palette, or lock to one stop when
+      // the switcher has picked a color. Either way we ease toward the target
+      // so theme changes cross-fade smoothly.
+      const ci = colorIndexRef.current
+      const [tgtTop, tgtBottom] =
+        ci == null ? paletteAt(t) : [PALETTE[ci][0], PALETTE[ci][1]]
+      if (!curTop) {
+        curTop = tgtTop.slice()
+        curBottom = tgtBottom.slice()
+      }
+      const k = clamp(dt * 2.5, 0, 1) // ~0.4s cross-fade
+      curTop = lerpColor(curTop, tgtTop, k)
+      curBottom = lerpColor(curBottom, tgtBottom, k)
+      const topBase = curTop
+      const bottomBase = curBottom
+      if (now - todCacheAt >= 1000) {
+        todCacheAt = now
+        const d = new Date()
+        dayFrac = (d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds()) / 86400
+        tod = timeOfDay(dayFrac)
+      }
       const tH = topBase[0] + tod.hueShift
       const tS = topBase[1] * tod.satMul
       const tL = topBase[2] * tod.lightMul
@@ -226,11 +336,7 @@ export default function WaveBackground() {
       ctx.fillRect(0, 0, w, h)
 
       // Darken the bottom-left corner toward black (opposite the sun glow).
-      const vg = ctx.createRadialGradient(0, h, 0, 0, h, Math.max(w, h) * 0.85)
-      vg.addColorStop(0, 'rgba(0, 0, 0, 0.6)')
-      vg.addColorStop(0.6, 'rgba(0, 0, 0, 0.28)')
-      vg.addColorStop(1, 'rgba(0, 0, 0, 0)')
-      ctx.fillStyle = vg
+      ctx.fillStyle = vignette
       ctx.fillRect(0, 0, w, h)
       ctx.globalAlpha = 1
 
@@ -239,68 +345,113 @@ export default function WaveBackground() {
       const baseX = -w * 0.06
       const stepX = (w * 1.12) / (COLS - 1)
 
-      ctx.globalCompositeOperation = 'lighter'
-      ctx.globalAlpha = ribbonReveal // ribbon is the first thing to surface
-      // Soft focus: a light blur over the whole ribbon so edges feather into
-      // the background instead of cutting a hard silhouette.
-      ctx.filter = 'blur(2.5px)'
-      // Back-to-front so nearer strands overlay farther ones (depth cue).
-      for (let s = STRANDS - 1; s >= 0; s--) {
-        const depth = s / (STRANDS - 1)        // 0 = front, 1 = back
-        const sway = (depth - 0.5) * 46         // vertical spread = thickness
-        const scale = lerp(1, 0.82, depth)      // perspective: back strands flatter
+      // The real XMB wave isn't a filled sheet — it's a band of many thin,
+      // parallel filaments of light that undulate together with slightly
+      // offset phases. Drawn additively, they pile into a glowing woven band
+      // that's densest in the middle and frays softly at the top/bottom edges.
+      // They're drawn SHARP onto an offscreen buffer here, then blitted to the
+      // screen with one blur pass below (cheap) — blurring per-stroke tanks FPS.
+      rctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      rctx.clearRect(0, 0, w, h)
+      rctx.globalCompositeOperation = 'lighter'
+      rctx.lineCap = 'round'
+      rctx.lineJoin = 'round'
+      for (let s = 0; s < FILAMENTS; s++) {
+        const fd = s / (FILAMENTS - 1)          // 0 = top edge, 1 = bottom edge
+        const off = (fd - 0.5) * BAND_H         // vertical place within the band
+        const edge = 1 - Math.abs(fd - 0.5) * 2 // 1 at center, 0 at the frayed edges
+        const scale = lerp(0.86, 1, edge)       // center strands swing a touch more
+        // Per-filament phase so neighbours weave rather than move in lockstep.
+        const phase = fd * 5.0
         for (let i = 0; i < COLS; i++) {
           const u = i / (COLS - 1)
-          pts[i] = centerY + sway + wave(u, t + depth * 0.5, s) * scale
+          pts[i] = centerY + off + wave(u, t + phase * 0.12, phase) * scale
         }
-        strokeRibbonStrand(pts, baseX, stepX, true)
-
-        // Lighting: front strands brightest, slight hue sweep across depth.
-        const crest = pts[Math.floor(COLS / 2)]
-        // Feathered gradient: the bright band fades in gradually rather than
-        // peaking right at the strand's top edge, which kept the line crisp.
-        const lg = ctx.createLinearGradient(0, crest - 90, 0, crest + 150)
-        const hue = tH + 40 + depth * 30
-        const li = lerp(60, 22, depth)
-        const al = lerp(0.13, 0.035, depth)
-        lg.addColorStop(0, hsl(hue, 50 * colorize, li + 14 + milky, 0))
-        lg.addColorStop(0.28, hsl(hue, 52 * colorize, li + 10 + milky, al * 1.3))
-        lg.addColorStop(0.55, hsl(hue, 55 * colorize, li + milky, al * 0.8))
-        lg.addColorStop(1, hsl(hue, 55 * colorize, li - 10 + milky, 0))
-        ctx.fillStyle = lg
-        ctx.fill()
+        strokeRibbonStrand(pts, baseX, stepX, false, rctx)
+        // Like the real XMB: the bright crest (edge≈1) washes out near-white,
+        // while the body and frayed edges carry a pale, luminous tint of the
+        // theme color — high saturation but kept light so it glows, not muddy.
+        const hue = tH + 18
+        const li = lerp(66, 94, edge)              // edges deeper, crest brightest
+        const al = (0.028 + 0.095 * edge * edge) * (0.55 + 0.45 * colorize)
+        rctx.lineWidth = lerp(0.8, 1.5, edge)
+        rctx.strokeStyle = hsl(hue, lerp(85, 42, edge) * colorize, li + milky * 0.5, al)
+        rctx.stroke()
       }
 
-      // Bright crest highlight — the signature XMB sheen line.
+      // Single blurred composite of the whole band onto the scene. The buffer
+      // is device-sized; drawing it at CSS size (w×h) keeps the blur in CSS px.
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.globalAlpha = ribbonReveal // ribbon is the first thing to surface
+      ctx.filter = 'blur(1.8px)'
+      ctx.drawImage(ribbonCanvas, 0, 0, w, h)
+      ctx.filter = 'none'
+
+      // Bright crest highlight — the signature XMB sheen line (soft bloom).
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
       for (let i = 0; i < COLS; i++) {
         const u = i / (COLS - 1)
         pts[i] = centerY - 18 + wave(u, t, 0)
       }
       strokeRibbonStrand(pts, baseX, stepX, false)
       ctx.lineWidth = 3
-      ctx.lineCap = 'round'
-      ctx.lineJoin = 'round'
-      ctx.strokeStyle = hsl(tH + 40, 40 * colorize, 92, 0.35 * tod.glow + 0.1)
-      ctx.shadowColor = hsl(tH + 40, 60 * colorize, 80 + milky * 0.4, 0.5)
+      ctx.strokeStyle = hsl(tH + 18, 38 * colorize, 93, 0.35 * tod.glow + 0.1)
+      ctx.shadowColor = hsl(tH + 18, 60 * colorize, 80 + milky * 0.4, 0.5)
       ctx.shadowBlur = 24
       ctx.stroke()
       ctx.shadowBlur = 0
+
+      // ---- glassy specular edge: a crisp, thin catch of light riding just
+      // above the crest. The sharpness (almost no blur) next to the soft bloom
+      // above is what sells "polished glass" vs. a glowing ribbon.
+      ctx.filter = 'blur(0.6px)'
+      for (let i = 0; i < COLS; i++) {
+        const u = i / (COLS - 1)
+        pts[i] = centerY - 27 + wave(u, t, 0)
+      }
+      strokeRibbonStrand(pts, baseX, stepX, false)
+      ctx.lineWidth = 1.3
+      ctx.strokeStyle = hsl(tH + 18, 22 * colorize, 99, 0.55 * tod.glow + 0.2)
+      ctx.shadowColor = hsl(tH + 18, 45 * colorize, 96, 0.6)
+      ctx.shadowBlur = 7
+      ctx.stroke()
+      ctx.shadowBlur = 0
+
+      // ---- internal reflection: a fainter, blurrier band lower in the body,
+      // like light refracting back through the glass.
+      ctx.filter = 'blur(2.5px)'
+      for (let i = 0; i < COLS; i++) {
+        const u = i / (COLS - 1)
+        pts[i] = centerY + 14 + wave(u, t, 0) * 0.82
+      }
+      strokeRibbonStrand(pts, baseX, stepX, false)
+      ctx.lineWidth = 2.4
+      ctx.strokeStyle = hsl(tH + 20, 55 * colorize, 86, 0.13 * tod.glow + 0.05)
+      ctx.stroke()
       ctx.filter = 'none'
 
-      // ---- ambient particles ---- (join in with the background)
-      ctx.globalAlpha = bgReveal
+      // ---- ambient sparkles ---- (twinkle along the ribbon, no drift up)
+      // Stamp the pre-baked sprite per sparkle — no arcs, no shadowBlur.
+      ctx.globalCompositeOperation = 'lighter' // additive -> they read as light
+      const glow = 0.4 + tod.glow
       for (let i = 0; i < motes.length; i++) {
         const m = motes[i]
-        m.y -= m.spd * dt
-        m.tw += dt * 2
-        if (m.y < -0.04) Object.assign(m, spawnMote(false))
-        const px = (m.x + Math.sin(t * 0.3 + m.y * 6) * 0.012 + m.drift * (1 - m.y) * 0.04) * w
-        const py = m.y * h
-        const twinkle = 0.6 + Math.sin(m.tw) * 0.4
-        ctx.beginPath()
-        ctx.arc(px, py, m.r, 0, TAU)
-        ctx.fillStyle = hsl(tH, tS - 18, 92, m.a * twinkle * (0.4 + tod.glow))
-        ctx.fill()
+        m.tw += dt * m.twSpd
+        m.u += m.drift * dt
+        if (m.u > 1.02) m.u -= 1.04
+        else if (m.u < -0.02) m.u += 1.04
+        // Sharp-peaked pulse: dark most of the time, a quick bright sparkle.
+        const s = Math.max(0, Math.sin(m.tw))
+        const spark = s * s
+        if (spark < 0.01) continue
+        // Sit on the ribbon: the same wave the crest uses places them on it.
+        const px = baseX + m.u * (w * 1.12)
+        const py = centerY + m.band * 42 + wave(m.u, t, 0)
+        // Sprite box scales with the dot's glow radius (~9x its core radius).
+        const size = m.r * (0.7 + spark * 0.6) * 9
+        ctx.globalAlpha = bgReveal * clamp(m.a * spark * glow, 0, 1)
+        ctx.drawImage(spriteCanvas, px - size / 2, py - size / 2, size, size)
       }
 
       ctx.globalCompositeOperation = 'source-over'

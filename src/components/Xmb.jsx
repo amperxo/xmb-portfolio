@@ -3,7 +3,15 @@ import { categories, profile, startCategory } from '../config.js'
 import Icon from './Icon.jsx'
 import BrandIcon from './BrandIcon.jsx'
 import Clock from './Clock.jsx'
-import WaveBackground from './WaveBackground.jsx'
+import WaveBackground, { PALETTE, THEME_NAMES } from './WaveBackground.jsx'
+
+// Switcher cycles: auto (null) -> 0 -> 1 -> ... -> 11 -> auto.
+const nextColor = (c) => (c == null ? 0 : c >= PALETTE.length - 1 ? null : c + 1)
+// A vivid swatch from a palette top-color (the stored tints are dark).
+const swatch = (i) => {
+  const [hh, s] = PALETTE[i][0]
+  return `hsl(${hh}, ${Math.min(s + 25, 90)}%, 52%)`
+}
 
 const CAT_SLOT = 200 // px width of each category column
 const ITEM_H = 100   // px vertical spacing between item rows
@@ -20,6 +28,7 @@ export default function Xmb() {
   const [catIndex, setCatIndex] = useState(START_INDEX)
   const [itemIndices, setItemIndices] = useState(() => categories.map(() => 0))
   const [opened, setOpened] = useState(null) // item object when detail is open
+  const [colorIndex, setColorIndex] = useState(null) // null = auto-cycle
 
   const itemIndex = itemIndices[catIndex]
   const activeCat = categories[catIndex]
@@ -75,7 +84,7 @@ export default function Xmb() {
 
   return (
     <div className="xmb">
-      <WaveBackground />
+      <WaveBackground colorIndex={colorIndex} />
 
       <header className="xmb-top">
         <div className="xmb-id">
@@ -138,6 +147,20 @@ export default function Xmb() {
           })}
         </div>
       </div>
+
+      <button
+        className="theme-switch"
+        onClick={() => setColorIndex(nextColor)}
+        title="Switch wave color"
+      >
+        <span
+          className={`theme-swatch ${colorIndex == null ? 'is-auto' : ''}`}
+          style={colorIndex == null ? undefined : { background: swatch(colorIndex) }}
+        />
+        <span className="theme-label">
+          {colorIndex == null ? 'Auto' : THEME_NAMES[colorIndex]}
+        </span>
+      </button>
 
       {opened && (
         <div className="detail" onClick={() => setOpened(null)}>
