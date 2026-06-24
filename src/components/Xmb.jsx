@@ -60,18 +60,18 @@ export default function Xmb() {
   useEffect(() => {
     const onKey = (e) => {
       if (opened) {
-        if (e.key === 'Escape' || e.key === 'Backspace') {
+        if (e.key === 'Escape' || e.key === 'Backspace' || e.key.toLowerCase() === 'q') {
           e.preventDefault()
           setOpened(null)
         }
         if (e.key === 'Enter' && opened.href) window.open(opened.href, '_blank', 'noopener')
         return
       }
-      switch (e.key) {
-        case 'ArrowLeft': e.preventDefault(); moveCat(-1); break
-        case 'ArrowRight': e.preventDefault(); moveCat(1); break
-        case 'ArrowUp': e.preventDefault(); moveItem(-1); break
-        case 'ArrowDown': e.preventDefault(); moveItem(1); break
+      switch (e.key.length === 1 ? e.key.toLowerCase() : e.key) {
+        case 'ArrowLeft': case 'a': e.preventDefault(); moveCat(-1); break
+        case 'ArrowRight': case 'd': e.preventDefault(); moveCat(1); break
+        case 'ArrowUp': case 'w': e.preventDefault(); moveItem(-1); break
+        case 'ArrowDown': case 's': e.preventDefault(); moveItem(1); break
         case 'Enter': case ' ': e.preventDefault(); openItem(); break
         default: break
       }
