@@ -8,6 +8,10 @@
   --xmb-font: 'Segoe UI', 'Helvetica Neue', system-ui, -apple-system, sans-serif;
   --ps-font: 'Titillium Web', var(--xmb-font);
   --glow: 0 0 12px rgba(255, 255, 255, 0.55);
+  /* Bar geometry — shared by the CSS column width and the JS bar transform in
+     Xmb.jsx. --bar-origin places the active column's centre on screen. */
+  --slot: 200px;
+  --bar-origin: 26vw;
 }
 
 * { box-sizing: border-box; }
@@ -18,6 +22,7 @@ html, body, #root {
   width: 100%;
   background: #000;
   overflow: hidden;
+  overscroll-behavior: none; /* no pull-to-refresh / rubber-band stealing swipes */
   font-family: var(--xmb-font);
   -webkit-font-smoothing: antialiased;
   color: #fff;
@@ -71,6 +76,7 @@ html, body, #root {
   inset: 0;
   overflow: hidden;
   animation: xmbIn 1s ease;
+  touch-action: manipulation; /* kill the 300ms tap delay; keep panning for swipes */
 }
 @keyframes xmbIn { from { opacity: 0; } to { opacity: 1; } }
 
@@ -116,8 +122,8 @@ html, body, #root {
 }
 .xmb-col {
   position: relative;
-  flex: 0 0 200px;
-  width: 200px;
+  flex: 0 0 var(--slot);
+  width: var(--slot);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -301,6 +307,25 @@ html, body, #root {
 .detail-link:hover { background: rgba(255, 255, 255, 0.14); transform: translateY(-1px); }
 
 @media (max-width: 640px) {
-  .xmb-col, .xmb-bar { --slot: 150px; }
+  /* Narrower columns, and re-centre the active one under the middle of the
+     screen (origin = 50vw - slot/2). These feed both CSS and the JS transform. */
+  :root { --slot: 132px; --bar-origin: calc(50vw - 66px); }
+
+  .xmb-top { padding: 16px 18px; }
+  .xmb-name { font-size: 17px; }
+  .xmb-tag { font-size: 11px; }
+  .xmb-time { font-size: 20px; }
+  .xmb-date { display: none; }
+
+  .xmb-cross { top: 33vh; }
+  .xmb-cat-icon { height: 44px; }
+  .xmb-items { width: 200px; margin-left: -100px; }
   .xmb-item-title { font-size: 17px; }
+
+  /* Compact, swatch-only switcher so it doesn't crowd the corner on a phone. */
+  .theme-switch { bottom: 16px; right: 16px; padding: 8px; }
+  .theme-label { display: none; }
+
+  .detail-card { padding: 24px 22px 26px; max-height: 82vh; overflow-y: auto; }
+  .detail-title { font-size: 24px; }
 }
