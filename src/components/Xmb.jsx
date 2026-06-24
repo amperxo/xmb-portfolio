@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { categories, profile, startCategory } from '../config.js'
 import Icon from './Icon.jsx'
 import BrandIcon from './BrandIcon.jsx'
@@ -13,8 +13,8 @@ const swatch = (i) => {
   return `hsl(${hh}, ${Math.min(s + 25, 90)}%, 52%)`
 }
 
-const CAT_SLOT = 200 // px width of each category column
 const ITEM_H = 100   // px vertical spacing between item rows
+const SWIPE_MIN = 36 // px a touch must travel to count as a swipe (vs a tap)
 // The selected item sits LIST_BELOW px under the category header; already-passed
 // items (index < selected) jump above the header starting at LIST_ABOVE, so the
 // header stays clear between the two groups.
@@ -56,6 +56,29 @@ export default function Xmb() {
     setOpened(categories[catIndex].items[itemIndices[catIndex]])
   }, [catIndex, itemIndices])
 
+  // ── Touch / swipe navigation ──
+  // Swipe left/right moves between categories, up/down between items — the same
+  // axes as the arrow keys. A touch that moves less than SWIPE_MIN is treated as
+  // a tap and left alone so click handlers still open items.
+  const touchRef = useRef(null)
+  const onTouchStart = (e) => {
+    if (opened) return
+    const t = e.touches[0]
+    touchRef.current = { x: t.clientX, y: t.clientY }
+  }
+  const onTouchEnd = (e) => {
+    const start = touchRef.current
+    touchRef.current = null
+    if (!start || opened) return
+    const t = e.changedTouches[0]
+    const dx = t.clientX - start.x
+    const dy = t.clientY - start.y
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return // a tap — let it click
+    e.preventDefault() // a real swipe: cancel the click it would otherwise fire
+    if (Math.abs(dx) > Math.abs(dy)) moveCat(dx < 0 ? 1 : -1)
+    else moveItem(dy < 0 ? 1 : -1)
+  }
+
   // ── Keyboard navigation ──
   useEffect(() => {
     const onKey = (e) => {
@@ -80,10 +103,12 @@ export default function Xmb() {
     return () => window.removeEventListener('keydown', onKey)
   }, [opened, moveCat, moveItem, openItem])
 
-  const barTransform = `translateX(calc(26vw - ${catIndex * CAT_SLOT}px))`
+  // Column width (--slot) and centering origin (--bar-origin) live in CSS so a
+  // single media query retunes the whole bar for phones; keep this in sync.
+  const barTransform = `translateX(calc(var(--bar-origin) - ${catIndex} * var(--slot)))`
 
   return (
-    <div className="xmb">
+    <div className="xmb" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <WaveBackground colorIndex={colorIndex} />
 
       <header className="xmb-top">
